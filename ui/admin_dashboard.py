@@ -19,6 +19,7 @@ from controllers.printer_controller import PrinterController
 from models.printer import Printer
 from PyQt6.QtWidgets import QDialog, QVBoxLayout, QCheckBox, QPushButton, QLabel
 from models.category import Category
+from ui.reports_window import ReportsPage  # adjust path if needed
 
 # ----------------------------- Product Form Dialog -----------------------------
 class ProductForm(QDialog):
@@ -65,8 +66,10 @@ class ProductForm(QDialog):
 
 # ----------------------------- Main Admin Dashboard -----------------------------
 class AdminDashboard(QMainWindow):
-    def __init__(self):
+    def __init__(self,user=None):
         super().__init__()
+        self.user = user or {"username": "Admin", "role": "Manager"}
+        self.setWindowTitle("FastFood Admin Dashboard")
         self.setWindowTitle("FastFood Admin Dashboard")
         self.setGeometry(150, 100, 1300, 750)
 
@@ -116,7 +119,7 @@ class AdminDashboard(QMainWindow):
         self.top_layout = QHBoxLayout(self.top_bar)
         self.lbl_title = QLabel("Dashboard Overview")
         self.lbl_title.setStyleSheet("font-weight: bold; font-size: 18px;")
-        self.lbl_user = QLabel("👤 Admin")
+        self.lbl_user = QLabel(f"👤 {self.user['username']} ({self.user['role']})")
         self.lbl_user.setAlignment(Qt.AlignmentFlag.AlignRight)
         self.top_layout.addWidget(self.lbl_title)
         self.top_layout.addStretch()
@@ -124,7 +127,7 @@ class AdminDashboard(QMainWindow):
 
         # Stacked pages
         self.pages = QStackedWidget()
-        self.page_dashboard = self.create_dashboard_page()
+        self.page_dashboard = ReportsPage()
         self.page_products = self.create_products_page()
         self.page_categories = self.create_categories_page()
         self.page_tables = self.create_page("Tables Management")
@@ -182,39 +185,7 @@ class AdminDashboard(QMainWindow):
         layout.addWidget(lbl)
         return page
 
-    def create_dashboard_page(self):
-        page = QWidget()
-        layout = QHBoxLayout(page)
-        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        cards = [
-            ("💰", "Total Sales", "45,000 DA"),
-            ("🍔", "Total Products", "23"),
-            ("🪑", "Tables Occupied", "6/12"),
-            ("👥", "Active Users", "5"),
-        ]
-
-        for icon, title, value in cards:
-            card = QFrame()
-            card.setFrameShape(QFrame.Shape.StyledPanel)
-            card.setStyleSheet("background: white; border-radius: 10px; padding: 20px;")
-            card_layout = QVBoxLayout(card)
-            card_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-            lbl_icon = QLabel(icon)
-            lbl_icon.setStyleSheet("font-size: 26px;")
-            lbl_title = QLabel(title)
-            lbl_title.setStyleSheet("font-size: 14px; color: #555;")
-            lbl_value = QLabel(value)
-            lbl_value.setStyleSheet("font-weight: bold; font-size: 18px;")
-
-            card_layout.addWidget(lbl_icon)
-            card_layout.addWidget(lbl_title)
-            card_layout.addWidget(lbl_value)
-
-            layout.addWidget(card)
-
-        return page
+    
 
     # ------------------------- PRODUCTS PAGE -------------------------
     def create_products_page(self):
