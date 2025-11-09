@@ -1,57 +1,84 @@
+# controllers/report_controller.py
 from models.database import get_connection
-from datetime import datetime, timedelta
+from datetime import datetime
+import csv
+from fpdf import FPDF  # pip install fpdf
+
 
 class ReportController:
     @staticmethod
-    def get_sales_summary():
+    def get_sales_summary(start_date=None, end_date=None):
         conn = get_connection()
+        conn.row_factory = lambda cursor, row: {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
         cur = conn.cursor()
 
-        today = datetime.now().date()
-        week_ago = today - timedelta(days=7)
-        month_ago = today - timedelta(days=30)
+        query = "SELECT SUM(total) AS total_sales FROM orders"
+        params = []
 
-        cur.execute("SELECT SUM(total) FROM orders WHERE date(created_at)=?", (today,))
-        today_sales = cur.fetchone()[0] or 0
+        if start_date and end_date:
+            query += " WHERE created_at BETWEEN ? AND ?"
+            params = [start_date, end_date]
 
-        cur.execute("SELECT SUM(total) FROM orders WHERE date(created_at)>=?", (week_ago,))
-        week_sales = cur.fetchone()[0] or 0
-
-        cur.execute("SELECT SUM(total) FROM orders WHERE date(created_at)>=?", (month_ago,))
-        month_sales = cur.fetchone()[0] or 0
+        cur.execute(query, params)
+        result = cur.fetchone()
+        total_sales = result["total_sales"] if result and result["total_sales"] else 0
 
         conn.close()
-        return {"today": today_sales, "week": week_sales, "month": month_sales}
-
+        return {"total": total_sales}
 
     @staticmethod
-    def get_top_products(limit=5):
+    def get_category_sales(start_date=None, end_date=None):
         conn = get_connection()
+        conn.row_factory = lambda cursor, row: {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
         cur = conn.cursor()
-        cur.execute("""
-            SELECT p.name, SUM(oi.quantity) AS qty
+
+        query = """
+            SELECT c.name AS category,
+                   SUM(oi.quantity * oi.price) AS total
             FROM order_items oi
-            JOIN products p ON p.id = oi.product_id
-            GROUP BY p.id
-            ORDER BY qty DESC
-            LIMIT ?
-        """, (limit,))
+            JOIN products p ON oi.product_id = p.id
+            JOIN categories c ON p.category_id = c.id
+            JOIN orders o ON oi.order_id = o.id
+        """
+
+        params = []
+        if start_date and end_date:
+            query += " WHERE o.created_at BETWEEN ? AND ?"
+            params = [start_date, end_date]
+
+        query += " GROUP BY c.id"
+
+        cur.execute(query, params)
         rows = cur.fetchall()
         conn.close()
-        return [{"name": r["name"], "qty": r["qty"]} for r in rows]
+
+        return [{"category": r["category"], "total": r["total"] or 0} for r in rows]
 
     @staticmethod
-    def get_sales_trend(days=7):
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute(f"""
-            SELECT date(created_at) as d, SUM(total) as total
-            FROM orders
-            WHERE date(created_at) >= date('now', '-{days} day')
-            GROUP BY date(created_at)
-            ORDER BY date(created_at)
-        """)
-        rows = cur.fetchall()
-        conn.close()
-        return [{"date": r["d"], "total": r["total"]} for r in rows]
+    def export_sales_to_csv(filename, data):
+        with open(filename, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Category", "Total Sales (DA)"])
+            for item in data:
+                writer.writerow([item["category"], item["total"]])
 
+    @staticmethod
+    def export_sales_to_pdf(filename, data):
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Arial", "B", 16)
+        pdf.cell(0, 10, "Sales Report", ln=True, align="C")
+        pdf.ln(10)
+
+        pdf.set_font("Arial", "B", 12)
+        pdf.cell(80, 10, "Category", border=1, align="C")
+        pdf.cell(80, 10, "Total (DA)", border=1, align="C")
+        pdf.ln()
+
+        pdf.set_font("Arial", "", 12)
+        for item in data:
+            pdf.cell(80, 10, str(item["category"]), border=1)
+            pdf.cell(80, 10, f"{item['total']:.2f}", border=1, align="R")
+            pdf.ln()
+
+        pdf.output(filename)

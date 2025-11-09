@@ -20,55 +20,88 @@ from models.printer import Printer
 from PyQt6.QtWidgets import QDialog, QVBoxLayout, QCheckBox, QPushButton, QLabel
 from models.category import Category
 from ui.reports_window import ReportsPage  # adjust path if needed
+from ui.settings_window import SettingsPage
+from ui.users_window import UsersPage
+from ui.filter_dialog import FilterDialog
+from PyQt6.QtWidgets import QMessageBox
+from utils.config_manager import save_config
+from ui.login_window import LoginWindow
+from ui.tables_page import TablesPage
+from ui.inventory_window import InventoryPage
+from models.category import Category
+
+
 
 # ----------------------------- Product Form Dialog -----------------------------
 class ProductForm(QDialog):
-    def __init__(self, parent=None, product=None):
-        super().__init__(parent)
-        self.setWindowTitle("Add / Edit Product")
-        self.setFixedWidth(300)
+    def __init__(self, categories, product=None):
+        super().__init__()
+        self.setWindowTitle("Product Form")
         layout = QFormLayout(self)
 
+        # Name
         self.name_input = QLineEdit()
+        layout.addRow("Name:", self.name_input)
+
+        # Category
         self.category_combo = QComboBox()
+        for cat in categories:
+            self.category_combo.addItem(cat["name"], cat["id"])
+        layout.addRow("Category:", self.category_combo)
+
+        # Price
         self.price_input = QDoubleSpinBox()
         self.price_input.setMaximum(100000)
         self.price_input.setDecimals(2)
-
-        # Load categories
-        categories = Category.all()
-        for cat in categories:
-            self.category_combo.addItem(cat["name"], cat["id"])
-
-        self.product = product
-        if product:
-            self.name_input.setText(product["name"])
-            self.price_input.setValue(product["price"])
-            idx = self.category_combo.findData(product["category_id"])
-            if idx >= 0:
-                self.category_combo.setCurrentIndex(idx)
-
-        layout.addRow("Name:", self.name_input)
-        layout.addRow("Category:", self.category_combo)
         layout.addRow("Price (DA):", self.price_input)
 
-        self.save_btn = QPushButton("Save")
-        self.save_btn.clicked.connect(self.accept)
-        layout.addWidget(self.save_btn)
+        # Cost
+        self.cost_input = QDoubleSpinBox()
+        self.cost_input.setMaximum(100000)
+        self.cost_input.setDecimals(2)
+        layout.addRow("Cost (DA):", self.cost_input)
+
+        # Status
+        self.status_combo = QComboBox()
+        self.status_combo.addItems(["active", "inactive"])
+        layout.addRow("Status:", self.status_combo)
+
+        # Buttons
+        btn_layout = QHBoxLayout()
+        save_btn = QPushButton("Save")
+        save_btn.clicked.connect(self.accept)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(save_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addRow(btn_layout)
+
+        # Fill data if editing
+        if product:
+            self.name_input.setText(product["name"])
+            self.category_combo.setCurrentIndex(self.category_combo.findData(product["category_id"]))
+            self.price_input.setValue(product["price"])
+            self.cost_input.setValue(product.get("cost", 0))
+            self.status_combo.setCurrentText(product["status"])
 
     def get_data(self):
         return {
             "name": self.name_input.text(),
             "category_id": self.category_combo.currentData(),
             "price": self.price_input.value(),
+            "cost": self.cost_input.value(),
+            "status": self.status_combo.currentText(),
         }
+
 
 
 # ----------------------------- Main Admin Dashboard -----------------------------
 class AdminDashboard(QMainWindow):
-    def __init__(self,user=None):
+    def __init__(self, role, user=None):
         super().__init__()
-        self.user = user or {"username": "Admin", "role": "Manager"}
+        self.user = user or {"username": "Admin", "role": role.capitalize()}
+        self.role = role
+
         self.setWindowTitle("FastFood Admin Dashboard")
         self.setWindowTitle("FastFood Admin Dashboard")
         self.setGeometry(150, 100, 1300, 750)
@@ -96,11 +129,30 @@ class AdminDashboard(QMainWindow):
         self.btn_categories = QPushButton("📂 Categories")
         self.btn_orders = QPushButton("💰 Orders & Sales")
         self.btn_tables = QPushButton("🪑 Tables")
+        self.btn_inventory = QPushButton(" Inventory")
         self.btn_printers = QPushButton("🖨️ Printers")
         self.btn_users = QPushButton("👥 Users")
         self.btn_settings = QPushButton("⚙️ Settings")
+        # --- Sign Out button ---
+        self.btn_logout = QPushButton("🚪 Sign Out")
+        self.btn_logout.setStyleSheet("""
+            QPushButton {
+                background-color: #e84118;
+                color: white;
+                border-radius: 6px;
+                padding: 8px;
+                font-size: 14px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #c23616;
+            }
+        """)
+        self.btn_logout.clicked.connect(self.handle_logout)
+        self.sidebar_layout.addWidget(self.btn_logout)
 
-        for btn in [self.btn_dashboard,self.btn_printers, self.btn_products,self.btn_orders,self.btn_categories, self.btn_tables, self.btn_users, self.btn_settings]:
+
+        for btn in [self.btn_dashboard,self.btn_inventory,self.btn_printers, self.btn_products,self.btn_orders,self.btn_categories, self.btn_tables, self.btn_users, self.btn_settings]:
             btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setStyleSheet("text-align: left; padding: 10px 15px; font-size: 14px;")
@@ -130,9 +182,12 @@ class AdminDashboard(QMainWindow):
         self.page_dashboard = ReportsPage()
         self.page_products = self.create_products_page()
         self.page_categories = self.create_categories_page()
-        self.page_tables = self.create_page("Tables Management")
-        self.page_users = self.create_page("Users Management")
-        self.page_settings = self.create_page("Settings")
+        self.page_tables = TablesPage()
+        self.page_inventory = InventoryPage()
+
+
+        self.page_users = UsersPage()
+        self.page_settings = SettingsPage()
         self.page_orders = self.create_orders_page()
         self.page_printers = self.create_printers_page()
 
@@ -145,6 +200,7 @@ class AdminDashboard(QMainWindow):
         self.pages.addWidget(self.page_settings)
         self.pages.addWidget(self.page_orders)
         self.pages.addWidget(self.page_printers)
+        self.pages.addWidget(self.page_inventory)
 
 
 
@@ -165,11 +221,15 @@ class AdminDashboard(QMainWindow):
         self.btn_settings.clicked.connect(lambda: self.switch_page(5, "Settings"))
         self.btn_orders.clicked.connect(lambda: self.switch_page(6, "Orders & Sales"))
         self.btn_printers.clicked.connect(lambda: self.switch_page(7, "Printers Management"))
+        self.btn_inventory.clicked.connect(lambda: self.switch_page(8, "Inventory Management"))
 
 
+        
 
         # ---------- STYLE ----------
         self.apply_style()
+        self.apply_role_permissions()
+
 
     # ------------------------- PAGE HANDLERS -------------------------
     def switch_page(self, index, title):
@@ -205,8 +265,8 @@ class AdminDashboard(QMainWindow):
 
         # Table
         self.table = QTableWidget()
-        self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels(["ID", "Name", "Category", "Price", "Actions"])
+        self.table.setColumnCount(6)
+        self.table.setHorizontalHeaderLabels(["ID", "Name", "Category", "Price", "Cost", "Actions"])
         self.table.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.table)
 
@@ -214,42 +274,78 @@ class AdminDashboard(QMainWindow):
         return page
 
     def load_products(self):
-        self.table.setRowCount(0)
-        products = Product.all()
+        from models.product import Product
+        products = Product.get_all()
+
+        self.table.setRowCount(len(products))
         for row_index, product in enumerate(products):
-            self.table.insertRow(row_index)
             self.table.setItem(row_index, 0, QTableWidgetItem(str(product["id"])))
             self.table.setItem(row_index, 1, QTableWidgetItem(product["name"]))
-            self.table.setItem(row_index, 2, QTableWidgetItem(product.get("category_name", "")))
-            self.table.setItem(row_index, 3, QTableWidgetItem(f"{product['price']:.2f}"))
+            self.table.setItem(row_index, 2, QTableWidgetItem(product["category_name"] if product["category_name"] else "—"))
+            self.table.setItem(row_index, 3, QTableWidgetItem(f"{product['price']:.2f} DA"))
+            self.table.setItem(row_index, 4, QTableWidgetItem(f"{product.get('cost', 0):.2f} DA"))
 
+            # --- Styled Action Buttons ---
             edit_btn = QPushButton("✏️ Edit")
-            edit_btn.clicked.connect(lambda _, p=product: self.edit_product(p))
-            del_btn = QPushButton("🗑️ Delete")
-            del_btn.clicked.connect(lambda _, p=product: self.delete_product(p["id"]))
+            delete_btn = QPushButton("🗑️ Delete")
 
+            # Button Styling
+            edit_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #28a745;
+                    color: white;
+                    border-radius: 8px;
+                    padding: 4px 10px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #218838;
+                }
+            """)
+            delete_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #dc3545;
+                    color: white;
+                    border-radius: 8px;
+                    padding: 4px 10px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #c82333;
+                }
+            """)
+
+            edit_btn.clicked.connect(lambda _, pid=product["id"]: self.edit_product(pid))
+            delete_btn.clicked.connect(lambda _, pid=product["id"]: self.delete_product(pid))
+
+            # Layout
             action_layout = QHBoxLayout()
             action_layout.addWidget(edit_btn)
-            action_layout.addWidget(del_btn)
-            action_layout.setContentsMargins(0, 0, 0, 0)
+            action_layout.addWidget(delete_btn)
+            action_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            action_layout.setSpacing(8)
 
             action_widget = QWidget()
             action_widget.setLayout(action_layout)
-            self.table.setCellWidget(row_index, 4, action_widget)
+            self.table.setCellWidget(row_index, 5, action_widget)
+
+
 
     def add_product(self):
-        dialog = ProductForm(self)
+        from models.category import Category
+        categories = Category.all()
+        dialog = ProductForm(categories)
         if dialog.exec():
-            data = dialog.get_data()
-            Product.create(data["name"], data["category_id"], data["price"])
             self.load_products()
 
-    def edit_product(self, product):
-        dialog = ProductForm(self, product)
+
+    def edit_product(self, product_id):
+        product = Product.get_by_id(product_id)   # ✅ get full product data
+        categories = Category.all()
+        dialog = ProductForm(categories, product)
         if dialog.exec():
-            data = dialog.get_data()
-            Product.update(product["id"], data["name"], data["category_id"], data["price"], product["status"])
             self.load_products()
+
 
     def delete_product(self, product_id):
         reply = QMessageBox.question(
@@ -265,25 +361,71 @@ class AdminDashboard(QMainWindow):
     def apply_style(self):
         self.setStyleSheet("""
             QMainWindow {
-                background-color: #f5f6fa;
+                background-color: #f8f9fa;
+                font-family: 'Segoe UI', sans-serif;
             }
             #sidebar {
-                background-color: #2f3640;
+                background-color: #1e272e;
                 color: white;
+                border-top-right-radius: 15px;
+                border-bottom-right-radius: 15px;
+            }
+            QLabel#title {
+                color: #2f3640;
+                font-size: 20px;
+                font-weight: 600;
             }
             QPushButton {
-                color: white;
+                color: #dcdde1;
                 background: transparent;
                 border: none;
+                padding: 10px 15px;
+                text-align: left;
+                font-size: 15px;
+                border-radius: 8px;
             }
             QPushButton:hover {
-                background-color: #353b48;
+                background-color: #485460;
+                color: #ffffff;
+            }
+            QPushButton:pressed {
+                background-color: #808e9b;
             }
             #topbar {
                 background-color: white;
                 border-bottom: 1px solid #ddd;
+                border-radius: 10px;
+            }
+            QTableWidget {
+                background-color: white;
+                border: 1px solid #ddd;
+                border-radius: 8px;
+                gridline-color: #f1f2f6;
+                selection-background-color: #ff9f43;
+                selection-color: white;
+                font-size: 14px;
+            }
+            QHeaderView::section {
+                background-color: #2f3640;
+                color: white;
+                padding: 6px;
+                border: none;
+                font-weight: bold;
+            }
+            QPushButton#action {
+                background-color: #ff9f43;
+                color: white;
+                border-radius: 6px;
+                padding: 6px 12px;
+            }
+            QPushButton#action:hover {
+                background-color: #e67e22;
+            }
+            QMessageBox {
+                background-color: #fff;
             }
         """)
+
 
     def create_categories_page(self):
         page = QWidget()
@@ -394,8 +536,9 @@ class AdminDashboard(QMainWindow):
 
         # Table
         self.table_orders = QTableWidget()
-        self.table_orders.setColumnCount(6)
-        self.table_orders.setHorizontalHeaderLabels(["ID", "Table", "User", "Total (DA)", "Payment Type", "Date"])
+        self.table_orders.setColumnCount(7)
+        self.table_orders.setHorizontalHeaderLabels(["ID", "Table", "User", "Total (DA)", "Payment Type", "Date", "Actions"])
+
         self.table_orders.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.table_orders)
 
@@ -410,7 +553,59 @@ class AdminDashboard(QMainWindow):
     def load_orders(self):
         orders = OrderController.get_all_orders()
         self.table_orders.setRowCount(len(orders))
+
         for i, order in enumerate(orders):
+            self.table_orders.setItem(i, 0, QTableWidgetItem(str(order["id"])))
+            self.table_orders.setItem(i, 1, QTableWidgetItem(str(order["table_number"]) if "table_number" in order.keys() else ""))
+            self.table_orders.setItem(i, 2, QTableWidgetItem(str(order["user_name"]) if "user_name" in order.keys() else ""))
+            self.table_orders.setItem(i, 3, QTableWidgetItem(f"{order['total']:.2f}" if order["total"] else "0.00"))
+            self.table_orders.setItem(i, 4, QTableWidgetItem(order["payment_type"] if "payment_type" in order.keys() else ""))
+            self.table_orders.setItem(i, 5, QTableWidgetItem(order["status"] if "status" in order.keys() else ""))
+
+
+            # --- Add buttons: Reprint | Refund | Details ---
+            btn_reprint = QPushButton("🖨 Reprint")
+            btn_refund = QPushButton("💸 Refund")
+            btn_details = QPushButton("📋 Details")
+
+            btn_reprint.setStyleSheet("background:#0984e3; color:white; border-radius:5px; padding:4px;")
+            btn_refund.setStyleSheet("background:#e84118; color:white; border-radius:5px; padding:4px;")
+            btn_details.setStyleSheet("background:#00b894; color:white; border-radius:5px; padding:4px;")
+
+            btn_reprint.clicked.connect(lambda _, o=order: self.reprint_order(o))
+            btn_refund.clicked.connect(lambda _, o=order: self.refund_order(o))
+            btn_details.clicked.connect(lambda _, o=order: self.show_order_details(o))
+
+            action_layout = QHBoxLayout()
+            action_layout.addWidget(btn_reprint)
+            action_layout.addWidget(btn_refund)
+            action_layout.addWidget(btn_details)
+            action_layout.setContentsMargins(0, 0, 0, 0)
+
+            action_widget = QWidget()
+            action_widget.setLayout(action_layout)
+            self.table_orders.setCellWidget(i, 6, action_widget)
+
+
+    def filter_orders(self):
+        dialog = FilterDialog(self)
+        if not dialog.exec():
+            return
+
+        filters = dialog.get_filters()
+        orders = OrderController.get_all_orders()
+
+        filtered = []
+        for order in orders:
+            date = order["created_at"].split(" ")[0]
+            if not (filters["start"] <= date <= filters["end"]):
+                continue
+            if filters["payment_type"] != "All" and order["payment_type"] != filters["payment_type"]:
+                continue
+            filtered.append(order)
+
+        self.table_orders.setRowCount(len(filtered))
+        for i, order in enumerate(filtered):
             self.table_orders.setItem(i, 0, QTableWidgetItem(str(order["id"])))
             self.table_orders.setItem(i, 1, QTableWidgetItem(order.get("table_name", "")))
             self.table_orders.setItem(i, 2, QTableWidgetItem(order.get("user_name", "")))
@@ -418,9 +613,6 @@ class AdminDashboard(QMainWindow):
             self.table_orders.setItem(i, 4, QTableWidgetItem(order["payment_type"]))
             self.table_orders.setItem(i, 5, QTableWidgetItem(order["created_at"]))
 
-    def filter_orders(self):
-        # Future version: show QDialog with date pickers + payment type
-        QMessageBox.information(self, "Coming Soon", "Filter functionality coming soon!")
 
     def export_orders(self):
         path, _ = QFileDialog.getSaveFileName(self, "Export Orders", "", "CSV Files (*.csv)")
@@ -434,6 +626,33 @@ class AdminDashboard(QMainWindow):
                 writer.writerow([o["id"], o["table_name"], o["user_name"], o["total"], o["payment_type"], o["created_at"]])
         QMessageBox.information(self, "Export Complete", f"Orders exported to:\n{path}")
 
+
+    def reprint_order(self, order):
+        printer_name = PrinterController.get_default_printer_name()
+        if not printer_name:
+            QMessageBox.warning(self, "No Printer", "No default printer configured.")
+            return
+        PrinterController.print_order(order)
+        QMessageBox.information(self, "Reprinted", f"Order #{order['id']} sent to printer.")
+
+    def refund_order(self, order):
+        confirm = QMessageBox.question(
+            self, "Confirm Refund",
+            f"Refund order #{order['id']} of {order['total']} DA?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if confirm == QMessageBox.StandardButton.Yes:
+            OrderController.refund(order["id"])
+            QMessageBox.information(self, "Refunded", f"Order #{order['id']} refunded successfully.")
+            self.load_orders()
+
+    def show_order_details(self, order):
+        details = OrderController.get_order_items(order["id"])
+        msg = f"🧾 Order #{order['id']}\n\n"
+        for item in details:
+            msg += f"{item['quantity']}x {item['product_name']} — {item['price']:.2f} DA\n"
+        msg += f"\nTotal: {order['total']:.2f} DA"
+        QMessageBox.information(self, "Order Details", msg)
 
         # ------------------------- PRINTERS PAGE -------------------------
         # ------------------------- PRINTERS PAGE -------------------------
@@ -466,8 +685,8 @@ class AdminDashboard(QMainWindow):
 
         # --- Table
         self.table_printers = QTableWidget()
-        self.table_printers.setColumnCount(4)
-        self.table_printers.setHorizontalHeaderLabels(["ID", "Name", "IP", "Category"])
+        self.table_printers.setColumnCount(6)
+        self.table_printers.setHorizontalHeaderLabels(["ID", "Name", "Connection", "IP", "Categories", "Status"])
         self.table_printers.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table_printers.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table_printers.horizontalHeader().setStretchLastSection(True)
@@ -499,11 +718,13 @@ class AdminDashboard(QMainWindow):
         self.table_printers.setRowCount(0)
         printers = PrinterController.get_all()
         for row, p in enumerate(printers):
-            self.table_printers.insertRow(row)
             self.table_printers.setItem(row, 0, QTableWidgetItem(str(p["id"])))
             self.table_printers.setItem(row, 1, QTableWidgetItem(p["name"]))
-            self.table_printers.setItem(row, 2, QTableWidgetItem(p.get("ip", "")))
-            self.table_printers.setItem(row, 3, QTableWidgetItem(p.get("category", "")))
+            self.table_printers.setItem(row, 2, QTableWidgetItem(p.get("connection", "manual")))
+            self.table_printers.setItem(row, 3, QTableWidgetItem(p.get("ip", "N/A")))
+            self.table_printers.setItem(row, 4, QTableWidgetItem(p.get("categories", "Unassigned")))
+            self.table_printers.setItem(row, 5, QTableWidgetItem(p.get("status", "offline")))
+
     
     def remove_printer_category(self):
         selected_items = self.table_printers.selectedItems()
@@ -522,13 +743,12 @@ class AdminDashboard(QMainWindow):
 
 
     def scan_printers(self):
-        """Scan printers and let user select which to add"""
+        """Scan system/network printers and allow the user to add them safely."""
         printers = PrinterController.detect_system_printers() or PrinterController.detect_printers()
         if not printers:
             QMessageBox.information(self, "Scan Complete", "No printers found.")
             return
 
-        # Get already added printers from DB
         existing = [p["name"] for p in Printer.all()]
 
         dialog = QDialog(self)
@@ -549,7 +769,9 @@ class AdminDashboard(QMainWindow):
             checkboxes.append(chk)
 
         btn_add = QPushButton("Add Selected")
-        btn_add.setStyleSheet("background: #0984e3; color: white; padding: 5px 10px; border-radius: 5px;")
+        btn_add.setStyleSheet(
+            "background: #0984e3; color: white; padding: 5px 10px; border-radius: 5px;"
+        )
         layout.addWidget(btn_add)
 
         def add_selected():
@@ -559,20 +781,45 @@ class AdminDashboard(QMainWindow):
                 return
 
             added_count = 0
+            import time, sqlite3
+
             for name in selected:
-                # Double-check again to avoid duplicates
+                # Avoid duplicates
                 if any(p["name"] == name for p in Printer.all()):
                     continue
-                Printer.create(
-                    name=name,
-                    type="thermal",
-                    connection="local",
-                    ip_address=None,
-                    port=None,
-                    categories=["Unassigned"],
-                    status="online"
-                )
-                added_count += 1
+
+                # Auto-detect type & connection
+                if "usb" in name.lower():
+                    printer_type = "usb"
+                    connection = "usb"
+                elif "network" in name.lower() or "." in name:
+                    printer_type = "network"
+                    connection = "network"
+                else:
+                    printer_type = "manual"
+                    connection = "manual"
+
+                # Safe DB insert with retry on lock
+                for attempt in range(5):
+                    try:
+                        Printer.create(
+                            name=name,
+                            type=printer_type,
+                            connection=connection,
+                            ip_address=None,
+                            port=None,
+                            categories=[],
+                            status="online"
+                        )
+                        added_count += 1
+                        break
+                    except sqlite3.OperationalError as e:
+                        if "locked" in str(e).lower():
+                            time.sleep(0.3)
+                            continue
+                        else:
+                            QMessageBox.warning(dialog, "Error", f"Failed to add printer {name}: {e}")
+                            break
 
             QMessageBox.information(dialog, "Success", f"Added {added_count} new printer(s).")
             dialog.accept()
@@ -582,22 +829,36 @@ class AdminDashboard(QMainWindow):
         dialog.exec()
 
 
+
+
     def add_printer(self):
-        """Add printer manually"""
-        name, ok1 = QInputDialog.getText(self, "Add Printer", "Enter printer name:")
-        if not ok1 or not name:
+        name = self.name_input.text().strip()
+        connection = self.connection_type_combo.currentText().lower()  # usb, network, manual
+        ip = self.ip_input.text().strip() or None
+        categories = self.category_input.text().strip()  # comma separated
+
+        if not name:
+            QMessageBox.warning(self, "Error", "Printer name is required")
             return
 
-        ip, ok2 = QInputDialog.getText(self, "Add Printer", "Enter IP (optional):")
-        if not ok2:
-            return
+        # Determine printer type based on connection
+        printer_type = connection if connection in ("usb", "network") else "manual"
 
-        category, ok3 = QInputDialog.getText(self, "Add Printer", "Enter category (optional):")
-        if not ok3:
-            return
 
-        PrinterController.add_manual(name, ip, category, self)
+        Printer.create(
+            name=name,
+            type=printer_type,          # type now matches the allowed values in DB
+            connection=connection,      # keep connection info as descriptive
+            ip_address=ip,
+            port=None,
+            categories=[c.strip() for c in categories.split(",") if c.strip()],
+            status="online"
+        )
+
+        QMessageBox.information(self, "Success", f"Printer '{name}' added successfully")
         self.load_printers()
+
+
 
     def assign_printer_category(self):
         """Assign existing category from DB to selected printer"""
@@ -651,8 +912,53 @@ class AdminDashboard(QMainWindow):
 
         printer_name = self.table_printers.item(selected, 1).text()
         PrinterController.print_test(printer_name, self)
+    
+    def apply_role_permissions(self):
+        """Hide or disable certain pages based on user role."""
+        if self.role == "cashier":
+            # Cashier can only see Orders and Products
+            self.btn_users.setVisible(False)
+            self.btn_settings.setVisible(False)
+            self.btn_printers.setVisible(False)
+            self.btn_categories.setVisible(False)
+            self.btn_tables.setVisible(False)
+
+        elif self.role == "kitchen":
+            # Kitchen only sees Orders
+            self.btn_dashboard.setVisible(False)
+            self.btn_products.setVisible(False)
+            self.btn_categories.setVisible(False)
+            self.btn_tables.setVisible(False)
+            self.btn_printers.setVisible(False)
+            self.btn_users.setVisible(False)
+            self.btn_settings.setVisible(False)
+
+        elif self.role == "manager":
+            # Manager can view reports and orders but not users/settings
+            self.btn_users.setVisible(False)
+            self.btn_settings.setVisible(False)
+
+        elif self.role == "admin":
+            # Full access
+            pass
 
 
+    def handle_logout(self):
+        reply = QMessageBox.question(
+            self,
+            "Confirm Logout",
+            "Are you sure you want to sign out?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            # Clear saved login info
+            save_config({})
+            self.close()
+
+            # Show login window again
+            from ui.login_window import LoginWindow
+            self.login_window = LoginWindow()
+            self.login_window.show()
 
 
 
