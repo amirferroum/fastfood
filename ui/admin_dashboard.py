@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QStackedWidget, QFrame, QSizePolicy,
     QTableWidget, QTableWidgetItem, QDialog, QFormLayout,
-    QComboBox, QDoubleSpinBox, QLineEdit, QMessageBox
+    QComboBox, QDoubleSpinBox, QLineEdit, QMessageBox,QScrollArea
 )
 from PyQt6.QtCore import Qt
 
@@ -714,16 +714,26 @@ class AdminDashboard(QMainWindow):
         QMessageBox.information(self, "Refreshed", "Printer list updated.")
 
     def load_printers(self):
-        """Load printers from database"""
+        # Clear old rows
         self.table_printers.setRowCount(0)
+
         printers = PrinterController.get_all()
+        if not printers:
+            return
+
+        # Ensure table has the right number of rows
+        self.table_printers.setRowCount(len(printers))
+
         for row, p in enumerate(printers):
-            self.table_printers.setItem(row, 0, QTableWidgetItem(str(p["id"])))
-            self.table_printers.setItem(row, 1, QTableWidgetItem(p["name"]))
-            self.table_printers.setItem(row, 2, QTableWidgetItem(p.get("connection", "manual")))
-            self.table_printers.setItem(row, 3, QTableWidgetItem(p.get("ip", "N/A")))
-            self.table_printers.setItem(row, 4, QTableWidgetItem(p.get("categories", "Unassigned")))
-            self.table_printers.setItem(row, 5, QTableWidgetItem(p.get("status", "offline")))
+            self.table_printers.setItem(row, 0, QTableWidgetItem(str(p.get("id", ""))))
+            self.table_printers.setItem(row, 1, QTableWidgetItem(p.get("name", "")))
+            self.table_printers.setItem(row, 2, QTableWidgetItem(p.get("connection", "")))
+            self.table_printers.setItem(row, 3, QTableWidgetItem(str(p.get("ip", ""))))
+            self.table_printers.setItem(row, 4, QTableWidgetItem(str(p.get("categories", ""))))
+            self.table_printers.setItem(row, 5, QTableWidgetItem(p.get("status", "")))
+
+        self.table_printers.resizeColumnsToContents()
+
 
     
     def remove_printer_category(self):
@@ -743,7 +753,7 @@ class AdminDashboard(QMainWindow):
 
 
     def scan_printers(self):
-        """Scan system/network printers and allow the user to add them safely."""
+        """Scan system/network printers and allow the user to add them."""
         printers = PrinterController.detect_system_printers() or PrinterController.detect_printers()
         if not printers:
             QMessageBox.information(self, "Scan Complete", "No printers found.")
@@ -753,73 +763,87 @@ class AdminDashboard(QMainWindow):
 
         dialog = QDialog(self)
         dialog.setWindowTitle("Detected Printers")
+        dialog.resize(500, 400)
+
         layout = QVBoxLayout(dialog)
 
         lbl = QLabel("Select printers to add:")
         layout.addWidget(lbl)
 
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+
         checkboxes = []
         for p in printers:
-            name = p["name"] if isinstance(p, dict) else p
-            chk = QCheckBox(name)
+            name = p.get("name", "Unknown")
+            uri = p.get("uri", "N/A")
+            conn = p.get("connection", "manual")
+            ip = p.get("ip", "N/A")
+            port = p.get("port", "N/A")
+            status = p.get("status", "Unknown")
+
+            info_text = (
+                f"🖨️ <b>{name}</b><br>"
+                f"<small>URI: {uri}<br>"
+                f"Connection: {conn}<br>"
+                f"IP: {ip} | Port: {port}<br>"
+                f"Status: {status}</small>"
+            )
+
+            chk = QCheckBox()
+            lbl_info = QLabel(info_text)
+            lbl_info.setTextFormat(Qt.TextFormat.RichText)
+            lbl_info.setStyleSheet("margin-left: 5px; margin-bottom: 10px;")
+
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.addWidget(chk)
+            row_layout.addWidget(lbl_info)
+            row_layout.addStretch()
+
             if name in existing:
                 chk.setDisabled(True)
-                chk.setText(f"{name} (already added)")
-            layout.addWidget(chk)
-            checkboxes.append(chk)
+                lbl_info.setText(f"<b>{name}</b> (already added)<br><small>{uri}</small>")
+
+            scroll_layout.addWidget(row)
+            checkboxes.append((chk, p))  # ✅ store tuple (checkbox, printer info)
+
+        scroll_content.setLayout(scroll_layout)
+        scroll_area.setWidget(scroll_content)
+        layout.addWidget(scroll_area)
 
         btn_add = QPushButton("Add Selected")
-        btn_add.setStyleSheet(
-            "background: #0984e3; color: white; padding: 5px 10px; border-radius: 5px;"
-        )
+        btn_add.setStyleSheet("background: #0984e3; color: white; padding: 5px 10px; border-radius: 5px;")
         layout.addWidget(btn_add)
 
+        # === FIXED add_selected function ===
         def add_selected():
-            selected = [chk.text().replace(" (already added)", "") for chk in checkboxes if chk.isChecked()]
+            selected = [(chk, p) for chk, p in checkboxes if chk.isChecked()]
             if not selected:
                 QMessageBox.warning(dialog, "No Selection", "Please select at least one printer.")
                 return
 
             added_count = 0
-            import time, sqlite3
+            for chk, printer in selected:
+                name = printer.get("name", "")
 
-            for name in selected:
-                # Avoid duplicates
+                # Skip if already exists
                 if any(p["name"] == name for p in Printer.all()):
                     continue
 
-                # Auto-detect type & connection
-                if "usb" in name.lower():
-                    printer_type = "usb"
-                    connection = "usb"
-                elif "network" in name.lower() or "." in name:
-                    printer_type = "network"
-                    connection = "network"
-                else:
-                    printer_type = "manual"
-                    connection = "manual"
-
-                # Safe DB insert with retry on lock
-                for attempt in range(5):
-                    try:
-                        Printer.create(
-                            name=name,
-                            type=printer_type,
-                            connection=connection,
-                            ip_address=None,
-                            port=None,
-                            categories=[],
-                            status="online"
-                        )
-                        added_count += 1
-                        break
-                    except sqlite3.OperationalError as e:
-                        if "locked" in str(e).lower():
-                            time.sleep(0.3)
-                            continue
-                        else:
-                            QMessageBox.warning(dialog, "Error", f"Failed to add printer {name}: {e}")
-                            break
+                connection_type = printer.get("connection", "network")
+                Printer.create(
+                    name=name,
+                    type=connection_type,  # must be 'usb' or 'network'
+                    connection=connection_type,
+                    ip_address=printer.get("ip"),
+                    port=printer.get("port"),
+                    categories=[],
+                    status="online"
+                )
+                added_count += 1
 
             QMessageBox.information(dialog, "Success", f"Added {added_count} new printer(s).")
             dialog.accept()
@@ -827,6 +851,8 @@ class AdminDashboard(QMainWindow):
 
         btn_add.clicked.connect(add_selected)
         dialog.exec()
+
+
 
 
 
