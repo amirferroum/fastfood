@@ -1,160 +1,173 @@
-import cups
-import subprocess
+import usb.core
+import usb.util
 import re
+from escpos.printer import Usb, Network
 from PyQt6.QtWidgets import QMessageBox
 from models.printer import Printer
 
 
 class PrinterController:
-    # === SYSTEM DETECTION ===
+
+    # ------------------------------------------------------
+    # USB DETECTION (pyusb)
+    # ------------------------------------------------------
     @staticmethod
-    def detect_system_printers():
-        """Detect printers available through CUPS and classify them."""
+    def detect_usb_printers():
+        import usb.core, usb.util
         printers = []
-        try:
-            conn = cups.Connection()
-            cups_printers = conn.getPrinters()
+        devices = usb.core.find(find_all=True)
 
-            for name, info in cups_printers.items():
-                uri = info.get("device-uri", "").lower()
-                printer_type = "manual"
-                ip = None
-                port = None
+        for dev in devices:
+            is_printer = False
 
-                # Detect connection type from URI
-                if uri.startswith("usb://"):
-                    printer_type = "usb"
-                elif any(uri.startswith(proto) for proto in ["socket://", "ipp://", "lpd://"]):
-                    printer_type = "network"
-                    match = re.search(r"(\d+\.\d+\.\d+\.\d+)(?::(\d+))?", uri)
-                    if match:
-                        ip = match.group(1)
-                        port = int(match.group(2)) if match.group(2) else 9100
+            if dev.bDeviceClass == 7:
+                is_printer = True
+            elif dev.bDeviceClass == 0:  # might expose printer class through interfaces
+                try:
+                    cfg = dev.get_active_configuration()
+                    for interface in cfg:
+                        if interface.bInterfaceClass == 7:
+                            is_printer = True
+                            break
+                except:
+                    pass
 
-                printers.append({
-                    "name": name,
-                    "uri": uri,
-                    "connection": printer_type,
-                    "ip": ip,
-                    "port": port,
-                    "info": info.get("printer-info", ""),
-                    "state": info.get("printer-state", 0),
-                    "status": info.get("printer-state-message", "Unknown"),
-                })
-        except RuntimeError as e:
-            print("CUPS error:", e)
+            if not is_printer:
+                continue
+
+            printers.append({
+                "name": usb.util.get_string(dev, dev.iProduct) or "USB Printer",
+                "vendor_id": f"{dev.idVendor:04X}",
+                "product_id": f"{dev.idProduct:04X}",
+                "serial_number": usb.util.get_string(dev, dev.iSerialNumber) or "",
+                "connection": "usb"
+            })
 
         return printers
 
+
+
+    # ------------------------------------------------------
+    # FALLBACK SIMPLE PRINTER DETECTOR (Manual mode)
+    # ------------------------------------------------------
     @staticmethod
     def detect_printers():
-        """Fallback printer detection using lpstat (if CUPS unavailable)."""
-        try:
-            result = subprocess.run(["lpstat", "-p"], capture_output=True, text=True)
-            printers = []
-            for line in result.stdout.splitlines():
-                if line.startswith("printer"):
-                    name = line.split()[1]
-                    printers.append({"name": name, "connection": "manual"})
-            return printers
-        except Exception as e:
-            print("Error detecting printers:", e)
-            return []
+        """Fallback manual detection if needed."""
+        return [{"name": "Manual Printer", "connection": "manual"}]
 
-    # === DATABASE ACCESS ===
+    # ------------------------------------------------------
+    # READ DATABASE
+    # ------------------------------------------------------
     @staticmethod
     def get_all():
-        """Return all printers stored in the local database."""
         printers = Printer.all()
         return [
             {
                 "id": p["id"],
                 "name": p["name"],
+                "connection": p.get("connection_type", "manual"),
                 "ip": p.get("ip_address", "N/A"),
-                "connection": p.get("connection", "manual"),
-                "categories": p.get("assigned_categories", "Unassigned")
-                    if p.get("assigned_categories") else "Unassigned",
+                "port": p.get("port", "N/A"),
+                "categories": p.get("assigned_categories", "Unassigned") or "Unassigned",
                 "status": p.get("status", "offline"),
+                "vendor_id": p.get("vendor_id", None),
+                "product_id": p.get("product_id", None),
             }
             for p in printers
         ]
 
-    # === ADD / REMOVE ===
+    # ------------------------------------------------------
+    # ADD PRINTER TO DB
+    # ------------------------------------------------------
     @staticmethod
-    def add_printer(name, connection_type="usb", ip=None, port=None, categories=None, parent=None):
-        """
-        Add a new printer entry with flexible connection type.
-        connection_type: 'usb', 'network', or 'manual'
-        categories: can be a string or list
-        """
+    def add_printer(name, connection_type="manual", vendor_id=None, product_id=None,
+                    serial_number=None, ip=None, port=None, categories=None, parent=None):
+
         if not name:
-            QMessageBox.warning(parent, "Error", "Printer name is required")
+            QMessageBox.warning(parent, "Missing Name", "Printer name is required.")
             return
 
+        # Normalize categories
         if isinstance(categories, str):
             categories = [c.strip() for c in categories.split(",") if c.strip()]
 
         try:
             Printer.create(
                 name=name,
-                type="thermal",
-                connection=connection_type,
+                connection_type=connection_type,
+                vendor_id=vendor_id,
+                product_id=product_id,
+                serial_number=serial_number,
                 ip_address=ip,
                 port=port,
-                categories=categories,
-                status="online"
+                assigned_categories=",".join(categories) if categories else None,
+                status="offline"
             )
-            QMessageBox.information(parent, "Success", f"Printer '{name}' added successfully")
+
+            QMessageBox.information(parent, "Success",
+                                    f"Printer '{name}' added successfully!")
+
         except Exception as e:
-            QMessageBox.warning(parent, "Error", f"Failed to add printer: {e}")
+            QMessageBox.warning(parent, "Error", f"Failed to add printer:\n{e}")
 
-    @staticmethod
-    def add_manual(name, ip, categories, parent=None):
-        """Backward compatibility for manual printer addition."""
-        PrinterController.add_printer(name, "manual", ip=ip, categories=categories, parent=parent)
-
+    # ------------------------------------------------------
+    # DELETE
+    # ------------------------------------------------------
     @staticmethod
     def delete_printer(printer_id, parent=None):
-        """Delete printer from DB."""
         try:
             Printer.delete(printer_id)
             QMessageBox.information(parent, "Deleted", "Printer removed successfully")
         except Exception as e:
             QMessageBox.warning(parent, "Error", f"Failed to delete: {e}")
 
-    # === PRINT TEST ===
+    # ------------------------------------------------------
+    # PRINT TEST
+    # ------------------------------------------------------
     @staticmethod
-    def print_test(printer_name, parent=None):
-        """Send a test print to the given printer."""
+    def print_test(printer, parent=None):
+        """
+        printer must be a DB printer row dict from get_all()
+        """
         try:
-            conn = cups.Connection()
-            file_path = "/usr/share/cups/data/testprint"
-            conn.printFile(printer_name, file_path, "Test Print", {})
-            QMessageBox.information(parent, "Success", f"Test print sent to {printer_name}")
-        except Exception as e:
-            QMessageBox.warning(parent, "Error", f"Failed to print: {e}")
+            if printer["connection"] == "usb":
+                v = int(printer["vendor_id"], 16)
+                p = int(printer["product_id"], 16)
+                escpos = Usb(v, p, timeout=4000)
+                escpos.text("Test Print OK\n")
+                escpos.cut()
 
-    # === AUTO-REGISTER ===
+            elif printer["connection"] == "network":
+                escpos = Network(printer["ip"], printer["port"])
+                escpos.text("Network Test Print OK\n")
+                escpos.cut()
+
+            else:
+                raise Exception("Manual printers cannot print test automatically.")
+
+            QMessageBox.information(parent, "Success", f"Test print sent to {printer['name']}")
+
+        except Exception as e:
+            QMessageBox.warning(parent, "Print Error", str(e))
+
+    # ------------------------------------------------------
+    # AUTO REGISTER DETECTED PRINTERS
+    # ------------------------------------------------------
     @staticmethod
     def auto_register_printers(parent=None):
-        """
-        Detect all printers (USB & network) via CUPS
-        and automatically register new ones in the local DB if not found.
-        """
-        detected = PrinterController.detect_system_printers()
-        existing = [p["name"] for p in Printer.all()]
+        detected = PrinterController.detect_usb_printers()
+        existing_names = [p["name"] for p in Printer.all()]
 
         added = 0
         for p in detected:
-            if p["name"] not in existing:
+            if p["name"] not in existing_names:
                 Printer.create(
                     name=p["name"],
-                    type="thermal",
-                    connection=p["connection"],
-                    ip_address=p["ip"],
-                    port=p["port"],
-                    categories=[],
-                    status="online",
+                    connection_type="usb",
+                    vendor_id=p["vendor_id"],
+                    product_id=p["product_id"],
+                    assigned_categories=[],
+                    status="online"
                 )
                 added += 1
 

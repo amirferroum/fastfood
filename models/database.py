@@ -94,13 +94,16 @@ def init_db():
         CREATE TABLE IF NOT EXISTS printers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
-            type TEXT,
-            connection TEXT,
+            connection_type TEXT CHECK(connection_type IN ('usb', 'network')),
+            vendor_id TEXT,
+            product_id TEXT,
+            serial_number TEXT,
             ip_address TEXT,
             port INTEGER,
             assigned_categories TEXT,
             status TEXT DEFAULT 'offline'
-        )
+        );
+
     """)
     
 

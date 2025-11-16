@@ -359,15 +359,19 @@ class POSWindow(QMainWindow):
 
         # filter by category & search
         def matches(p):
-            if category_id:
+            if category_id is not None:
                 pid_cat = p.get("category_id") if isinstance(p, dict) else None
-                if pid_cat != category_id:
+                try:
+                    if int(pid_cat) != int(category_id):
+                        return False
+                except Exception:
                     return False
             if search_term:
                 name = p.get("name", "") if isinstance(p, dict) else str(p)
                 if search_term.lower() not in name.lower():
                     return False
             return True
+
 
         # if products might be sqlite3.Row, convert to dict-like safely
         pr_list = []

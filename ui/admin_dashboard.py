@@ -29,7 +29,8 @@ from ui.login_window import LoginWindow
 from ui.tables_page import TablesPage
 from ui.inventory_window import InventoryPage
 from models.category import Category
-
+import usb.core
+import usb.util
 
 
 # ----------------------------- Product Form Dialog -----------------------------
@@ -694,7 +695,7 @@ class AdminDashboard(QMainWindow):
 
         # --- Connections
         btn_scan.clicked.connect(self.scan_printers)
-        btn_add.clicked.connect(self.add_printer)
+        btn_add.clicked.connect(self.open_add_printer_dialog)
         btn_assign.clicked.connect(self.assign_printer_category)
         btn_delete.clicked.connect(self.delete_printer)
         btn_test.clicked.connect(self.test_print)
@@ -753,22 +754,21 @@ class AdminDashboard(QMainWindow):
 
 
     def scan_printers(self):
-        """Scan system/network printers and allow the user to add them."""
-        printers = PrinterController.detect_system_printers() or PrinterController.detect_printers()
+        """Scan USB printers (PyUSB) and allow the user to add them."""
+        printers = PrinterController.detect_usb_printers()
+
         if not printers:
-            QMessageBox.information(self, "Scan Complete", "No printers found.")
+            QMessageBox.information(self, "Scan Complete", "No USB printers found.")
             return
 
         existing = [p["name"] for p in Printer.all()]
 
         dialog = QDialog(self)
-        dialog.setWindowTitle("Detected Printers")
+        dialog.setWindowTitle("Detected USB Printers")
         dialog.resize(500, 400)
 
         layout = QVBoxLayout(dialog)
-
-        lbl = QLabel("Select printers to add:")
-        layout.addWidget(lbl)
+        layout.addWidget(QLabel("Select USB printers to add:"))
 
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
@@ -778,24 +778,20 @@ class AdminDashboard(QMainWindow):
         checkboxes = []
         for p in printers:
             name = p.get("name", "Unknown")
-            uri = p.get("uri", "N/A")
-            conn = p.get("connection", "manual")
-            ip = p.get("ip", "N/A")
-            port = p.get("port", "N/A")
-            status = p.get("status", "Unknown")
+            vid = p.get("vendor_id", "N/A")
+            pid = p.get("product_id", "N/A")
+            serial = p.get("serial_number", "N/A")
 
-            info_text = (
+            info = (
                 f"🖨️ <b>{name}</b><br>"
-                f"<small>URI: {uri}<br>"
-                f"Connection: {conn}<br>"
-                f"IP: {ip} | Port: {port}<br>"
-                f"Status: {status}</small>"
+                f"<small>Vendor ID: {vid}<br>"
+                f"Product ID: {pid}<br>"
+                f"Serial: {serial}</small>"
             )
 
             chk = QCheckBox()
-            lbl_info = QLabel(info_text)
+            lbl_info = QLabel(info)
             lbl_info.setTextFormat(Qt.TextFormat.RichText)
-            lbl_info.setStyleSheet("margin-left: 5px; margin-bottom: 10px;")
 
             row = QWidget()
             row_layout = QHBoxLayout(row)
@@ -805,20 +801,17 @@ class AdminDashboard(QMainWindow):
 
             if name in existing:
                 chk.setDisabled(True)
-                lbl_info.setText(f"<b>{name}</b> (already added)<br><small>{uri}</small>")
+                lbl_info.setText(f"🖨️ <b>{name}</b> <small>(already added)</small>")
 
             scroll_layout.addWidget(row)
-            checkboxes.append((chk, p))  # ✅ store tuple (checkbox, printer info)
+            checkboxes.append((chk, p))
 
-        scroll_content.setLayout(scroll_layout)
         scroll_area.setWidget(scroll_content)
         layout.addWidget(scroll_area)
 
         btn_add = QPushButton("Add Selected")
-        btn_add.setStyleSheet("background: #0984e3; color: white; padding: 5px 10px; border-radius: 5px;")
         layout.addWidget(btn_add)
 
-        # === FIXED add_selected function ===
         def add_selected():
             selected = [(chk, p) for chk, p in checkboxes if chk.isChecked()]
             if not selected:
@@ -828,24 +821,21 @@ class AdminDashboard(QMainWindow):
             added_count = 0
             for chk, printer in selected:
                 name = printer.get("name", "")
-
-                # Skip if already exists
                 if any(p["name"] == name for p in Printer.all()):
                     continue
 
-                connection_type = printer.get("connection", "network")
                 Printer.create(
                     name=name,
-                    type=connection_type,  # must be 'usb' or 'network'
-                    connection=connection_type,
-                    ip_address=printer.get("ip"),
-                    port=printer.get("port"),
-                    categories=[],
+                    connection_type="usb",
+                    vendor_id=printer.get("vendor_id"),
+                    product_id=printer.get("product_id"),
+                    serial_number=printer.get("serial_number"),
+                    assigned_categories="[]",
                     status="online"
                 )
                 added_count += 1
 
-            QMessageBox.information(dialog, "Success", f"Added {added_count} new printer(s).")
+            QMessageBox.information(dialog, "Success", f"Added {added_count} printer(s).")
             dialog.accept()
             self.load_printers()
 
@@ -855,6 +845,113 @@ class AdminDashboard(QMainWindow):
 
 
 
+    def open_add_printer_dialog(self):
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLineEdit, QLabel, QPushButton, QComboBox, QHBoxLayout
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Add Printer")
+
+        layout = QVBoxLayout(dialog)
+
+        # Printer Name
+        self.printer_name = QLineEdit()
+        layout.addWidget(QLabel("Printer Name:"))
+        layout.addWidget(self.printer_name)
+
+        # Connection Type
+        self.connection_type = QComboBox()
+        self.connection_type.addItems(["manual", "usb", "network"])
+        layout.addWidget(QLabel("Connection Type:"))
+        layout.addWidget(self.connection_type)
+
+        # USB Vendor/Product ID
+        self.vendor_input = QLineEdit()
+        self.product_input = QLineEdit()
+
+        # Network IP/PORT
+        self.ip_input = QLineEdit()
+        self.port_input = QLineEdit()
+        self.port_input.setText("9100")
+
+        # Categories
+        self.categories_input = QLineEdit()
+        layout.addWidget(QLabel("Categories (comma separated):"))
+        layout.addWidget(self.categories_input)
+
+        # Dynamic field zone
+        self.dynamic_zone = QVBoxLayout()
+        layout.addLayout(self.dynamic_zone)
+
+        def update_fields():
+            for i in reversed(range(self.dynamic_zone.count())):
+                widget = self.dynamic_zone.itemAt(i).widget()
+                if widget:
+                    widget.deleteLater()
+
+            c = self.connection_type.currentText()
+
+            if c == "usb":
+                self.dynamic_zone.addWidget(QLabel("Vendor ID (hex):"))
+                self.dynamic_zone.addWidget(self.vendor_input)
+                self.dynamic_zone.addWidget(QLabel("Product ID (hex):"))
+                self.dynamic_zone.addWidget(self.product_input)
+
+            elif c == "network":
+                self.dynamic_zone.addWidget(QLabel("IP Address:"))
+                self.dynamic_zone.addWidget(self.ip_input)
+                self.dynamic_zone.addWidget(QLabel("Port:"))
+                self.dynamic_zone.addWidget(self.port_input)
+
+            # manual requires no extra fields.
+
+        self.connection_type.currentTextChanged.connect(update_fields)
+        update_fields()
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        save_btn = QPushButton("Save")
+        cancel_btn = QPushButton("Cancel")
+
+        button_layout.addWidget(save_btn)
+        button_layout.addWidget(cancel_btn)
+        layout.addLayout(button_layout)
+
+        # Save event
+        def save_printer():
+            from controllers.printer_controller import PrinterController
+
+            name = self.printer_name.text().strip()
+            conn_type = self.connection_type.currentText()
+            categories = self.categories_input.text().strip()
+
+            vendor = product = serial = ip = port = None
+
+            if conn_type == "usb":
+                vendor = self.vendor_input.text().strip()
+                product = self.product_input.text().strip()
+
+            elif conn_type == "network":
+                ip = self.ip_input.text().strip()
+                port = int(self.port_input.text().strip())
+
+            PrinterController.add_printer(
+                name=name,
+                connection_type=conn_type,
+                vendor_id=vendor,
+                product_id=product,
+                ip=ip,
+                port=port,
+                categories=categories,
+                parent=self
+            )
+            dialog.close()
+            self.load_printers_table()
+
+        save_btn.clicked.connect(save_printer)
+        cancel_btn.clicked.connect(dialog.close)
+
+        dialog.exec()
+                            
 
 
     def add_printer(self):
